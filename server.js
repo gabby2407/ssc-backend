@@ -39,4 +39,21 @@ app.get('/api/members', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 5000;
+// POST Endpoint: Register new member/officer into Supabase
+app.post('/api/members', async (req, res) => {
+  const { ssc_number, full_name, member_type, designation, year_section, cellphone, status } = req.body;
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO members (ssc_number, full_name, member_type, designation, year_section, cellphone, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [ssc_number, full_name, member_type || 'member', designation, year_section, cellphone, status || 'ACTIVE']
+    );
+
+    res.status(201).json({ message: "Registration successful!", member: result.rows[0] });
+  } catch (err) {
+    console.error("Insert error:", err);
+    res.status(500).json({ error: "Failed to register member. SSC Number might already exist." });
+  }
+});
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
