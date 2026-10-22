@@ -1,6 +1,8 @@
+const multer = require('multer');
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 app.use(cors());
@@ -11,6 +13,12 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
+
+// Initialize Supabase Client for Storage
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+
+// Multer setup for handling file uploads in memory
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Route to fetch members from Supabase
 app.get('/api/members', async (req, res) => {
@@ -39,6 +47,7 @@ app.get('/api/members', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 5000;
+
 // POST Endpoint: Register new member/officer into Supabase
 app.post('/api/members', async (req, res) => {
   const { ssc_number, full_name, member_type, designation, year_section, cellphone, status } = req.body;
@@ -56,6 +65,7 @@ app.post('/api/members', async (req, res) => {
     res.status(500).json({ error: "Failed to register member. SSC Number might already exist." });
   }
 });
+
 // GET Route: Fetch all posts for the portal feed
 app.get('/api/posts', async (req, res) => {
   try {
@@ -82,12 +92,41 @@ app.post('/api/posts', async (req, res) => {
     res.status(500).json({ error: 'Failed to create post' });
   }
 });
+
+// POST Route: Image Upload Endpoint (Direct to Supabase Storage)
+app.post('/api/upload', upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No image file provided." });
+    }
+
+    const file = req.file;
+    const fileName = `${Date.now()}-${file.originalname}`;
+
+    // Upload file to your Supabase Storage bucket named 'post-images'
+    const { data, error } = await supabase.storage
+      .from('post-images')
+      .upload(fileName, file.buffer, {
+        contentType: file.mimetype,
+        upsert: false
+      });
+
+    if (error) {
+      console.error("Supabase storage error:", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    // Get public URL of the uploaded image
+    const { data: publicURLData } = supabase.storage
+      .from('post-images')
+      .getPublicUrl(fileName);
+
+    res.status(200).json({ image_url: publicURLData.publicUrl });
+
+    } catch (err) {
+      console.error("Upload error:", err);
+      res.status(500).json({ error: "Server error during file upload." });
+    }
+});
+
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-// Call this function when a user selects or verifies their login record
-function loginUser(userData) {
-  // Store user info in local storage (includes member_type: 'officer' or 'member')
-  localStorage.setItem('ssc_user', JSON.stringify(userData));
-  
-  // Redirect directly to the feed portal
-  window.location.href = "dashboard.html";
-}
