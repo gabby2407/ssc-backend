@@ -93,6 +93,23 @@ app.post('/api/posts', async (req, res) => {
   }
 });
 
+// DELETE Route: Remove a post by ID (Council Officers)
+app.delete('/api/posts/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query('DELETE FROM posts WHERE id = $1 RETURNING *', [id]);
+    
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+    
+    res.json({ message: 'Post deleted successfully' });
+  } catch (err) {
+    console.error("Delete error:", err);
+    res.status(500).json({ error: 'Server error while deleting post' });
+  }
+});
+
 // POST Route: Image Upload Endpoint (Direct to Supabase Storage)
 app.post('/api/upload', upload.single('image'), async (req, res) => {
   try {
