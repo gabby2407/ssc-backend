@@ -56,4 +56,38 @@ app.post('/api/members', async (req, res) => {
     res.status(500).json({ error: "Failed to register member. SSC Number might already exist." });
   }
 });
+// GET Route: Fetch all posts for the portal feed
+app.get('/api/posts', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM posts ORDER BY created_at DESC');
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST Route: Create a new post (Council Officers only)
+app.post('/api/posts', async (req, res) => {
+  const { author_name, author_role, content, image_url } = req.body;
+  try {
+    const result = await pool.query(
+      `INSERT INTO posts (author_name, author_role, content, image_url)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [author_name, author_role, content, image_url || null]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to create post' });
+  }
+});
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// Call this function when a user selects or verifies their login record
+function loginUser(userData) {
+  // Store user info in local storage (includes member_type: 'officer' or 'member')
+  localStorage.setItem('ssc_user', JSON.stringify(userData));
+  
+  // Redirect directly to the feed portal
+  window.location.href = "dashboard.html";
+}
