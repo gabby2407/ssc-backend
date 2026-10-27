@@ -24,7 +24,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 app.get('/api/members', async (req, res) => {
   try {
     const { search, type } = req.query;
-    let query = 'SELECT * FROM members WHERE 1=1';
+    let query = "SELECT * FROM members WHERE UPPER(status) = 'ACTIVE'";
     let params = [];
 
     if (type && type !== 'ALL') {
@@ -52,17 +52,76 @@ const PORT = process.env.PORT || 5000;
 app.post('/api/members', async (req, res) => {
   const { ssc_number, full_name, member_type, designation, year_section, cellphone, status } = req.body;
 
+  if (!ssc_number || !String(ssc_number).trim()) {
+    return res.status(400).json({ error: 'SSC ID is required.' });
+  }
+
   try {
     const result = await pool.query(
       `INSERT INTO members (ssc_number, full_name, member_type, designation, year_section, cellphone, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [ssc_number, full_name, member_type || 'member', designation, year_section, cellphone, status || 'ACTIVE']
+      [ssc_number, full_name, member_type || 'member', designation, year_section, cellphone, 'PENDING']
     );
 
     res.status(201).json({ message: "Registration successful!", member: result.rows[0] });
   } catch (err) {
     console.error("Insert error:", err);
+
+    // PostgreSQL uses 23505 for duplicate-key/unique-constraint violations.
+    // Check the constraint/message as well so this remains clear if the
+    // database driver does not expose the error code consistently.
+    const isDuplicateSscId = err?.code === '23505'
+      || /duplicate key|unique constraint/i.test(err?.message || '')
+      || /ssc[_-]?number/i.test(err?.constraint || '');
+
+    if (isDuplicateSscId) {
+      return res.status(400).json({
+        error: 'This SSC ID is already registered. Please log in or use a different ID.'
+      });
+    }
+
     res.status(500).json({ error: "Failed to register member. SSC Number might already exist." });
+  }
+});
+
+// Council review routes use a shared secret kept on the server, never in the page source.
+function requireCouncilKey(req, res, next) {
+  const expected = process.env.SSC_COUNCIL_APPROVAL_KEY;
+  const provided = req.get('x-council-approval-key');
+  if (!expected) {
+    return res.status(503).json({ error: 'Council approval is not configured on the server.' });
+  }
+  if (!provided || provided !== expected) {
+    return res.status(403).json({ error: 'Council approval key is invalid.' });
+  }
+  next();
+}
+
+app.get('/api/members/pending', requireCouncilKey, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT ssc_number, full_name, member_type, designation, year_section, cellphone, status FROM members WHERE UPPER(status) = 'PENDING' ORDER BY ssc_number ASC"
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Pending members query error:', err);
+    res.status(500).json({ error: 'Failed to load pending registrations.' });
+  }
+});
+
+app.post('/api/members/:ssc_number/approve', requireCouncilKey, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "UPDATE members SET status = 'ACTIVE' WHERE LOWER(ssc_number) = LOWER($1) AND UPPER(status) = 'PENDING' RETURNING *",
+      [req.params.ssc_number]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Pending registration not found.' });
+    }
+    res.json({ message: 'Registration approved.', member: result.rows[0] });
+  } catch (err) {
+    console.error('Member approval error:', err);
+    res.status(500).json({ error: 'Failed to approve registration.' });
   }
 });
 
