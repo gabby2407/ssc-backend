@@ -27,8 +27,15 @@ app.get('/api/members', async (req, res) => {
     let query = "SELECT * FROM members WHERE UPPER(status) = 'ACTIVE'";
     let params = [];
 
-    if (type && type !== 'ALL') {
-      params.push(type === 'OFFICERS' ? 'officer' : 'member');
+    if (type && type.toUpperCase() !== 'ALL') {
+      const normalizedType = type.toUpperCase();
+      if (normalizedType === 'OFFICER' || normalizedType === 'OFFICERS') {
+        params.push('officer');
+      } else if (normalizedType === 'MEMBER' || normalizedType === 'MEMBERS') {
+        params.push('member');
+      } else {
+        return res.status(400).json({ error: 'Invalid member type filter.' });
+      }
       query += ` AND member_type = $${params.length}`;
     }
 
