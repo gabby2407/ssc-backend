@@ -117,20 +117,8 @@ app.post('/api/members', async (req, res) => {
   }
 });
 
-// Council review routes use a shared secret kept on the server, never in the page source.
-function requireCouncilKey(req, res, next) {
-  const expected = process.env.SSC_COUNCIL_APPROVAL_KEY;
-  const provided = req.get('x-council-approval-key');
-  if (!expected) {
-    return res.status(503).json({ error: 'Council approval is not configured on the server.' });
-  }
-  if (!provided || provided !== expected) {
-    return res.status(403).json({ error: 'Council approval key is invalid.' });
-  }
-  next();
-}
-
-app.get('/api/members/pending', requireCouncilKey, async (req, res) => {
+// Only authenticated council officers can review member registrations.
+app.get('/api/members/pending', requireAuth, requireOfficer, async (req, res) => {
   try {
     const result = await pool.query(
       "SELECT ssc_number, full_name, member_type, designation, year_section, cellphone, status FROM members WHERE UPPER(status) = 'PENDING' ORDER BY ssc_number ASC"
@@ -142,7 +130,7 @@ app.get('/api/members/pending', requireCouncilKey, async (req, res) => {
   }
 });
 
-app.post('/api/members/:ssc_number/approve', requireCouncilKey, async (req, res) => {
+app.post('/api/members/:ssc_number/approve', requireAuth, requireOfficer, async (req, res) => {
   try {
     const result = await pool.query(
       "UPDATE members SET status = 'ACTIVE' WHERE LOWER(ssc_number) = LOWER($1) AND UPPER(status) = 'PENDING' RETURNING *",
