@@ -20,6 +20,32 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 // Multer setup for handling file uploads in memory
 const upload = multer({ storage: multer.memoryStorage() });
 
+async function requireAuth(req, res, next) {
+  const authorization = req.get('authorization') || '';
+  const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+  if (!token) return res.status(401).json({ error: 'Sign in is required.' });
+
+  try {
+    const { data, error } = await supabase.auth.getUser(token);
+    if (error || !data.user) return res.status(401).json({ error: 'Your session is invalid or expired.' });
+    const result = await pool.query('SELECT role, display_name FROM profiles WHERE id = $1', [data.user.id]);
+    if (result.rowCount === 0) return res.status(403).json({ error: 'Account profile is not configured.' });
+    req.authUser = data.user;
+    req.authProfile = result.rows[0];
+    next();
+  } catch (err) {
+    console.error('Authentication check error:', err);
+    res.status(500).json({ error: 'Could not verify your account.' });
+  }
+}
+
+function requireOfficer(req, res, next) {
+  if (req.authProfile?.role !== 'officer') {
+    return res.status(403).json({ error: 'Only council officers can publish or remove announcements.' });
+  }
+  next();
+}
+
 // Route to fetch members from Supabase
 app.get('/api/members', async (req, res) => {
   try {
@@ -57,7 +83,7 @@ const PORT = process.env.PORT || 5000;
 
 // POST Endpoint: Register new member/officer into Supabase
 app.post('/api/members', async (req, res) => {
-  const { ssc_number, full_name, member_type, designation, year_section, cellphone, status } = req.body;
+  const { ssc_number, full_name, designation, year_section, cellphone } = req.body;
 
   if (!ssc_number || !String(ssc_number).trim()) {
     return res.status(400).json({ error: 'SSC ID is required.' });
@@ -67,7 +93,7 @@ app.post('/api/members', async (req, res) => {
     const result = await pool.query(
       `INSERT INTO members (ssc_number, full_name, member_type, designation, year_section, cellphone, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [ssc_number, full_name, member_type || 'member', designation, year_section, cellphone, 'PENDING']
+      [ssc_number, full_name, 'member', designation, year_section, cellphone, 'PENDING']
     );
 
     res.status(201).json({ message: "Registration successful!", member: result.rows[0] });
@@ -144,13 +170,13 @@ app.get('/api/posts', async (req, res) => {
 });
 
 // POST Route: Create a new post (Council Officers only)
-app.post('/api/posts', async (req, res) => {
-  const { author_name, author_role, content, image_url } = req.body;
+app.post('/api/posts', requireAuth, requireOfficer, async (req, res) => {
+  const { content, image_url } = req.body;
   try {
     const result = await pool.query(
       `INSERT INTO posts (author_name, author_role, content, image_url)
        VALUES ($1, $2, $3, $4) RETURNING *`,
-      [author_name, author_role, content, image_url || null]
+      [req.authProfile.display_name, 'Council Officer', content, image_url || null]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -160,7 +186,7 @@ app.post('/api/posts', async (req, res) => {
 });
 
 // DELETE Route: Remove a post by ID (Council Officers)
-app.delete('/api/posts/:id', async (req, res) => {
+app.delete('/api/posts/:id', requireAuth, requireOfficer, async (req, res) => {
   const { id } = req.params;
   try {
     const result = await pool.query('DELETE FROM posts WHERE id = $1 RETURNING *', [id]);
@@ -177,7 +203,7 @@ app.delete('/api/posts/:id', async (req, res) => {
 });
 
 // POST Route: Image Upload Endpoint (Direct to Supabase Storage)
-app.post('/api/upload', upload.single('image'), async (req, res) => {
+app.post('/api/upload', requireAuth, requireOfficer, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: "No image file provided." });
