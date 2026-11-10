@@ -3,6 +3,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
+const { timingSafeEqual } = require('crypto');
 
 const app = express();
 app.use(cors());
@@ -42,6 +43,20 @@ async function requireAuth(req, res, next) {
 function requireOfficer(req, res, next) {
   if (req.authProfile?.role !== 'officer') {
     return res.status(403).json({ error: 'Only council officers can publish or remove announcements.' });
+  }
+  next();
+}
+
+// Registration review is limited to signed-in accounts that also know the
+// council approval key. Keep the key in the backend environment only.
+function requireCouncilKey(req, res, next) {
+  const expected = process.env.SSC_COUNCIL_APPROVAL_KEY || '';
+  const provided = req.get('x-council-approval-key') || '';
+  const expectedBuffer = Buffer.from(expected);
+  const providedBuffer = Buffer.from(provided);
+  if (!expected) return res.status(503).json({ error: 'Council approval is not configured on the server.' });
+  if (expectedBuffer.length !== providedBuffer.length || !timingSafeEqual(expectedBuffer, providedBuffer)) {
+    return res.status(403).json({ error: 'Council approval key is invalid.' });
   }
   next();
 }
@@ -147,7 +162,7 @@ app.post('/api/members/link-request', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/members/link-requests', requireAuth, requireOfficer, async (_req, res) => {
+app.get('/api/members/link-requests', requireAuth, requireCouncilKey, async (_req, res) => {
   try {
     const result = await pool.query(
       `SELECT r.id, r.ssc_number, r.auth_user_id, u.email, m.full_name, r.created_at
@@ -163,7 +178,7 @@ app.get('/api/members/link-requests', requireAuth, requireOfficer, async (_req, 
   }
 });
 
-app.post('/api/members/link-requests/:id/approve', requireAuth, requireOfficer, async (req, res) => {
+app.post('/api/members/link-requests/:id/approve', requireAuth, requireCouncilKey, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -197,7 +212,7 @@ app.post('/api/members/link-requests/:id/approve', requireAuth, requireOfficer, 
 });
 
 // Only authenticated council officers can review member registrations.
-app.get('/api/members/pending', requireAuth, requireOfficer, async (req, res) => {
+app.get('/api/members/pending', requireAuth, requireCouncilKey, async (req, res) => {
   try {
     const result = await pool.query(
       "SELECT ssc_number, full_name, member_type, designation, year_section, cellphone, status FROM members WHERE UPPER(status) = 'PENDING' ORDER BY ssc_number ASC"
@@ -209,7 +224,7 @@ app.get('/api/members/pending', requireAuth, requireOfficer, async (req, res) =>
   }
 });
 
-app.post('/api/members/:ssc_number/approve', requireAuth, requireOfficer, async (req, res) => {
+app.post('/api/members/:ssc_number/approve', requireAuth, requireCouncilKey, async (req, res) => {
   try {
     const result = await pool.query(
       "UPDATE members SET status = 'ACTIVE' WHERE LOWER(ssc_number) = LOWER($1) AND UPPER(status) = 'PENDING' RETURNING *",
