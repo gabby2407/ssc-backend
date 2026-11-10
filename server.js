@@ -117,6 +117,85 @@ app.post('/api/members', async (req, res) => {
   }
 });
 
+// A signed-in member can request to link their Auth account to an existing
+// SSC record. An officer must review and approve the request before linking.
+app.post('/api/members/link-request', requireAuth, async (req, res) => {
+  const sscNumber = String(req.body?.ssc_number || '').trim();
+  if (!sscNumber) return res.status(400).json({ error: 'SSC ID is required.' });
+
+  try {
+    const member = await pool.query(
+      'SELECT ssc_number, auth_user_id FROM members WHERE LOWER(ssc_number) = LOWER($1)',
+      [sscNumber]
+    );
+    if (member.rowCount === 0) return res.status(404).json({ error: 'No SSC member record matches that ID.' });
+    if (member.rows[0].auth_user_id && member.rows[0].auth_user_id !== req.authUser.id) {
+      return res.status(409).json({ error: 'That SSC record is already linked to another login. Contact a council administrator.' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO member_account_link_requests (ssc_number, auth_user_id)
+       VALUES ($1, $2)
+       ON CONFLICT (auth_user_id) DO UPDATE SET ssc_number = EXCLUDED.ssc_number, status = 'PENDING'
+       RETURNING id, ssc_number, status`,
+      [member.rows[0].ssc_number, req.authUser.id]
+    );
+    res.status(201).json({ message: 'Link request submitted for officer review.', request: result.rows[0] });
+  } catch (err) {
+    console.error('Member link request error:', err);
+    res.status(500).json({ error: 'Could not submit the member link request.' });
+  }
+});
+
+app.get('/api/members/link-requests', requireAuth, requireOfficer, async (_req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT r.id, r.ssc_number, r.auth_user_id, u.email, m.full_name, r.created_at
+       FROM member_account_link_requests r
+       JOIN members m ON LOWER(m.ssc_number) = LOWER(r.ssc_number)
+       JOIN auth.users u ON u.id = r.auth_user_id
+       WHERE r.status = 'PENDING' ORDER BY r.created_at ASC`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Member link request load error:', err);
+    res.status(500).json({ error: 'Could not load member link requests.' });
+  }
+});
+
+app.post('/api/members/link-requests/:id/approve', requireAuth, requireOfficer, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const request = await client.query(
+      "SELECT id, ssc_number, auth_user_id FROM member_account_link_requests WHERE id = $1 AND status = 'PENDING' FOR UPDATE",
+      [req.params.id]
+    );
+    if (!request.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Pending link request not found.' });
+    }
+    const link = request.rows[0];
+    const linked = await client.query(
+      'UPDATE members SET auth_user_id = $1 WHERE LOWER(ssc_number) = LOWER($2)',
+      [link.auth_user_id, link.ssc_number]
+    );
+    if (!linked.rowCount) throw new Error('The SSC member record no longer exists.');
+    await client.query(
+      "UPDATE member_account_link_requests SET status = 'APPROVED', reviewed_at = now(), reviewed_by = $1 WHERE id = $2",
+      [req.authUser.id, link.id]
+    );
+    await client.query('COMMIT');
+    res.json({ message: 'Member account linked. Set role to officer separately if appropriate.' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Member link approval error:', err);
+    res.status(500).json({ error: 'Could not approve the member link request.' });
+  } finally {
+    client.release();
+  }
+});
+
 // Only authenticated council officers can review member registrations.
 app.get('/api/members/pending', requireAuth, requireOfficer, async (req, res) => {
   try {
